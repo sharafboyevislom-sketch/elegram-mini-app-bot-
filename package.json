@@ -1,0 +1,13 @@
+{
+  "name": "telegram-miniapp-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that opens a Mini App (web-app) connected to a website",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
