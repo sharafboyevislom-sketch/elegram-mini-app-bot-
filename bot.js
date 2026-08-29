@@ -137,13 +137,20 @@ app.post("/webhook/new-order", async (req, res) => {
     }
   }
 
-  if (!GROUP_CHAT_ID) {
-    console.log("GROUP_CHAT_ID sozlanmagan, guruhga xabar yuborilmadi.");
-    return res.status(200).send("OK (guruh sozlanmagan)");
-  }
-
   try {
     const order = req.body.record; // Supabase webhook "record" ichida yangi qatorni yuboradi
+
+    const { data: business } = await supabase
+      .from("businesses")
+      .select("name, group_chat_id")
+      .eq("id", order.business_id)
+      .maybeSingle();
+
+    const targetChatId = business?.group_chat_id || GROUP_CHAT_ID;
+    if (!targetChatId) {
+      console.log("Guruh ID topilmadi (na biznesda, na GROUP_CHAT_ID'da), xabar yuborilmadi.");
+      return res.status(200).send("OK (guruh sozlanmagan)");
+    }
 
     const { data: customer } = await supabase
       .from("customers")
@@ -162,14 +169,14 @@ app.post("/webhook/new-order", async (req, res) => {
       : "";
 
     const text =
-      `🆕 Yangi buyurtma!\n\n` +
+      `🆕 Yangi buyurtma! (${business?.name || "Noma'lum do'kon"})\n\n` +
       `👤 ${customer?.full_name || "Noma'lum"}\n` +
       `📞 ${customer?.phone || "—"}\n\n` +
       `${itemsText}\n\n` +
       `🏠 ${order.address_text || "—"}${locationText}\n` +
       `💰 ${Number(order.total_amount).toLocaleString("uz-UZ")} so'm`;
 
-    await bot.sendMessage(GROUP_CHAT_ID, text);
+    await bot.sendMessage(targetChatId, text);
     res.status(200).send("OK");
   } catch (err) {
     console.error("Webhook xatosi:", err);
