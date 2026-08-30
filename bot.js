@@ -305,10 +305,12 @@ app.post("/webhook/new-taxi-order", async (req, res) => {
       .maybeSingle();
 
     const mapLink = `https://maps.google.com/?q=${order.pickup_latitude},${order.pickup_longitude}`;
+    const isDelivery = order.service_type === "delivery";
     const text =
-      `🚖 Yangi taksi so'rovi!\n\n` +
+      `${isDelivery ? "📦 Yangi dostavka so'rovi!" : "🚖 Yangi taksi so'rovi!"}\n\n` +
       `👤 ${customer?.full_name || "Noma'lum"}\n` +
       `📞 ${customer?.phone || "—"}\n\n` +
+      (isDelivery && order.parcel_description ? `📦 Nima: ${order.parcel_description}\n` : "") +
       `📍 ${mapLink}\n` +
       `🏁 Qayerga: ${order.destination_text || "—"}\n\n` +
       `Qabul qilish uchun haydovchi panelini oching.`;
