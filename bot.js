@@ -1,11 +1,11 @@
-// Telegram bot: /start bosilganda ism va telefon raqamini so'raydi,
-// Supabase'ga saqlaydi, keyin Mini App'ni ochish tugmasini beradi.
-// Shuningdek, Supabase'dan kelgan "yangi buyurtma" webhook'ini qabul qilib,
-// buyurtmalar guruhiga xabar yuboradi.
+// Telegram bot:
+// - Mijozlar uchun: /start -> ism, telefon so'raydi -> Mini App tugmasi
+// - Haydovchilar uchun: /haydovchi -> ism, telefon, mashina ma'lumoti so'raydi -> Haydovchi paneli tugmasi
+// - Yangi ovqat buyurtmasi -> tegishli do'kon guruhiga xabar
+// - Yangi taksi so'rovi -> BARCHA onlayn haydovchilarga SHAXSIY xabar (guruhsiz)
 //
-// O'rnatish: npm install
-// Railway Variables: BOT_TOKEN, WEBAPP_URL, SUPABASE_URL, SUPABASE_KEY,
-//                     GROUP_CHAT_ID, WEBHOOK_SECRET
+// Railway Variables: BOT_TOKEN, WEBAPP_URL, DRIVER_APP_URL, SUPABASE_URL, SUPABASE_KEY,
+//                     GROUP_CHAT_ID (ixtiyoriy), WEBHOOK_SECRET (ixtiyoriy)
 
 require("dotenv").config();
 const express = require("express");
@@ -14,10 +14,11 @@ const { createClient } = require("@supabase/supabase-js");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBAPP_URL = process.env.WEBAPP_URL;
+const DRIVER_APP_URL = process.env.DRIVER_APP_URL;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID; // ixtiyoriy — bo'lmasa guruhga xabar yuborilmaydi
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET; // ixtiyoriy — bo'lsa webhook shu maxfiy so'z bilan himoyalanadi
+const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID; // ixtiyoriy fallback (ovqat buyurtmalari uchun)
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 if (!BOT_TOKEN || !WEBAPP_URL || !SUPABASE_URL || !SUPABASE_KEY) {
   console.error("BOT_TOKEN, WEBAPP_URL, SUPABASE_URL, SUPABASE_KEY hammasi kerak.");
@@ -27,14 +28,24 @@ if (!BOT_TOKEN || !WEBAPP_URL || !SUPABASE_URL || !SUPABASE_KEY) {
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Har bir chat uchun vaqtinchalik holat (ism so'ralyaptimi, raqammi)
-const pendingState = new Map(); // chatId -> { step: 'name' | 'phone', name?: string }
+// Har bir chat uchun vaqtinchalik holat: { role: 'customer'|'driver', step, ...yig'ilgan ma'lumot }
+const pendingState = new Map();
 
 function openAppKeyboard(telegramId) {
   const url = `${WEBAPP_URL}?tid=${telegramId}`;
   return {
     reply_markup: {
       keyboard: [[{ text: "🚀 Ilovani ochish", web_app: { url } }]],
+      resize_keyboard: true,
+    },
+  };
+}
+
+function driverAppKeyboard(telegramId) {
+  const url = `${DRIVER_APP_URL}?tid=${telegramId}`;
+  return {
+    reply_markup: {
+      keyboard: [[{ text: "🚗 Haydovchi paneli", web_app: { url } }]],
       resize_keyboard: true,
     },
   };
@@ -50,12 +61,11 @@ function contactKeyboard() {
   };
 }
 
+// ==== Mijoz oqimi ====
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const telegramId = msg.from.id;
 
-  // Guruh ichida /start ishlatilsa, guruh chat_id'sini konsolga chiqaramiz
-  // (GROUP_CHAT_ID sozlashda foydalanish uchun)
   if (msg.chat.type !== "private") {
     console.log("Guruh chat_id:", chatId, "| Guruh nomi:", msg.chat.title);
     return;
@@ -76,54 +86,128 @@ bot.onText(/\/start/, async (msg) => {
     return;
   }
 
-  pendingState.set(chatId, { step: "name" });
+  pendingState.set(chatId, { role: "customer", step: "name" });
   bot.sendMessage(chatId, "Assalomu alaykum! Ismingizni kiriting:");
+});
+
+// ==== Haydovchi oqimi ====
+bot.onText(/\/haydovchi/, async (msg) => {
+  const chatId = msg.chat.id;
+  const telegramId = msg.from.id;
+  if (msg.chat.type !== "private") return;
+
+  const { data: existing } = await supabase
+    .from("drivers")
+    .select("id, full_name")
+    .eq("telegram_id", telegramId)
+    .maybeSingle();
+
+  if (existing) {
+    bot.sendMessage(
+      chatId,
+      `Xush kelibsiz, ${existing.full_name}! Haydovchi panelini oching 👇`,
+      driverAppKeyboard(telegramId)
+    );
+    return;
+  }
+
+  pendingState.set(chatId, { role: "driver", step: "name" });
+  bot.sendMessage(chatId, "Haydovchi sifatida ro'yxatdan o'tish. Ismingizni kiriting:");
 });
 
 bot.on("contact", async (msg) => {
   const chatId = msg.chat.id;
   const state = pendingState.get(chatId);
-  if (!state || state.step !== "phone") return;
-
+  if (!state) return;
   const telegramId = msg.from.id;
   const phone = msg.contact.phone_number;
 
-  await supabase.from("customers").upsert(
-    {
-      telegram_id: telegramId,
-      full_name: state.name,
-      phone,
-    },
-    { onConflict: "telegram_id" }
-  );
+  if (state.role === "customer" && state.step === "phone") {
+    await supabase.from("customers").upsert(
+      { telegram_id: telegramId, full_name: state.name, phone },
+      { onConflict: "telegram_id" }
+    );
+    pendingState.delete(chatId);
+    bot.sendMessage(chatId, "Rahmat! Endi buyurtma berishingiz mumkin 👇", openAppKeyboard(telegramId));
+    return;
+  }
 
-  pendingState.delete(chatId);
-  bot.sendMessage(chatId, "Rahmat! Endi buyurtma berishingiz mumkin 👇", openAppKeyboard(telegramId));
-});
-
-bot.on("message", (msg) => {
-  const chatId = msg.chat.id;
-  const state = pendingState.get(chatId);
-  if (!state) return;
-  if (msg.text && msg.text.startsWith("/")) return; // buyruqlarni bu yerda ishlatmaymiz
-  if (msg.contact) return; // yuqoridagi handler ishlaydi
-
-  if (state.step === "name") {
-    const name = (msg.text || "").trim();
-    if (!name) {
-      bot.sendMessage(chatId, "Iltimos, ismingizni matn sifatida yozing.");
-      return;
-    }
-    pendingState.set(chatId, { step: "phone", name });
-    bot.sendMessage(chatId, `Rahmat, ${name}! Endi telefon raqamingizni yuboring:`, contactKeyboard());
+  if (state.role === "driver" && state.step === "phone") {
+    pendingState.set(chatId, { ...state, step: "car_model", phone });
+    bot.sendMessage(chatId, "Mashinangiz modelini kiriting (masalan: Chevrolet Cobalt):");
   }
 });
 
-bot.on("web_app_data", (msg) => {
-  console.log("web_app_data:", msg.web_app_data.data);
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const state = pendingState.get(chatId);
+  if (!state) return;
+  if (msg.text && msg.text.startsWith("/")) return;
+  if (msg.contact) return;
+
+  const text = (msg.text || "").trim();
+
+  // ---- Mijoz ----
+  if (state.role === "customer" && state.step === "name") {
+    if (!text) {
+      bot.sendMessage(chatId, "Iltimos, ismingizni matn sifatida yozing.");
+      return;
+    }
+    pendingState.set(chatId, { role: "customer", step: "phone", name: text });
+    bot.sendMessage(chatId, `Rahmat, ${text}! Endi telefon raqamingizni yuboring:`, contactKeyboard());
+    return;
+  }
+
+  // ---- Haydovchi ----
+  if (state.role === "driver") {
+    if (state.step === "name") {
+      if (!text) {
+        bot.sendMessage(chatId, "Iltimos, ismingizni matn sifatida yozing.");
+        return;
+      }
+      pendingState.set(chatId, { ...state, step: "phone", name: text });
+      bot.sendMessage(chatId, `Rahmat, ${text}! Endi telefon raqamingizni yuboring:`, contactKeyboard());
+      return;
+    }
+    if (state.step === "car_model") {
+      if (!text) {
+        bot.sendMessage(chatId, "Iltimos, mashina modelini yozing.");
+        return;
+      }
+      pendingState.set(chatId, { ...state, step: "car_plate", car_model: text });
+      bot.sendMessage(chatId, "Davlat raqamini kiriting (masalan: 01A123BC):");
+      return;
+    }
+    if (state.step === "car_plate") {
+      if (!text) {
+        bot.sendMessage(chatId, "Iltimos, davlat raqamini yozing.");
+        return;
+      }
+      const telegramId = msg.from.id;
+      await supabase.from("drivers").upsert(
+        {
+          telegram_id: telegramId,
+          full_name: state.name,
+          phone: state.phone,
+          car_model: state.car_model,
+          car_plate: text,
+        },
+        { onConflict: "telegram_id" }
+      );
+      pendingState.delete(chatId);
+      bot.sendMessage(
+        chatId,
+        "Ro'yxatdan o'tdingiz! Haydovchi panelida onlayn bo'lib, buyurtmalarni qabul qilishingiz mumkin 👇",
+        driverAppKeyboard(telegramId)
+      );
+      return;
+    }
+  }
 });
 
-// ==== HTTP server: Supabase'dan "yangi buyurtma" webhook'ini qabul qilish ====
+console.log("Bot ishga tushdi...");
+
+// ==== HTTP server ====
 const app = express();
 app.use(express.json());
 app.use((req, res, next) => {
@@ -136,16 +220,22 @@ app.use((req, res, next) => {
 
 app.get("/", (req, res) => res.send("Bot ishlayapti."));
 
-app.post("/webhook/new-order", async (req, res) => {
-  if (WEBHOOK_SECRET) {
-    const secret = req.headers["x-webhook-secret"];
-    if (secret !== WEBHOOK_SECRET) {
-      return res.status(401).send("Ruxsat yo'q");
-    }
+function checkSecret(req, res) {
+  if (!WEBHOOK_SECRET) return true;
+  const secret = req.headers["x-webhook-secret"];
+  if (secret !== WEBHOOK_SECRET) {
+    res.status(401).send("Ruxsat yo'q");
+    return false;
   }
+  return true;
+}
+
+// ---- Yangi ovqat/mahsulot buyurtmasi -> do'kon guruhiga ----
+app.post("/webhook/new-order", async (req, res) => {
+  if (!checkSecret(req, res)) return;
 
   try {
-    const order = req.body.record; // Supabase webhook "record" ichida yangi qatorni yuboradi
+    const order = req.body.record;
 
     const { data: business } = await supabase
       .from("businesses")
@@ -155,7 +245,6 @@ app.post("/webhook/new-order", async (req, res) => {
 
     const targetChatId = business?.group_chat_id || GROUP_CHAT_ID;
     if (!targetChatId) {
-      console.log("Guruh ID topilmadi (na biznesda, na GROUP_CHAT_ID'da), xabar yuborilmadi.");
       return res.status(200).send("OK (guruh sozlanmagan)");
     }
 
@@ -191,7 +280,87 @@ app.post("/webhook/new-order", async (req, res) => {
   }
 });
 
+// ---- Yangi taksi so'rovi -> barcha onlayn haydovchilarga shaxsiy xabar ----
+app.post("/webhook/new-taxi-order", async (req, res) => {
+  if (!checkSecret(req, res)) return;
+
+  try {
+    const order = req.body.record;
+
+    const { data: onlineDrivers } = await supabase
+      .from("drivers")
+      .select("telegram_id")
+      .eq("is_active", true)
+      .eq("is_online", true);
+
+    if (!onlineDrivers || onlineDrivers.length === 0) {
+      console.log("Onlayn haydovchi topilmadi.");
+      return res.status(200).send("OK (haydovchi yo'q)");
+    }
+
+    const { data: customer } = await supabase
+      .from("customers")
+      .select("full_name, phone")
+      .eq("id", order.customer_id)
+      .maybeSingle();
+
+    const mapLink = `https://maps.google.com/?q=${order.pickup_latitude},${order.pickup_longitude}`;
+    const text =
+      `🚖 Yangi taksi so'rovi!\n\n` +
+      `👤 ${customer?.full_name || "Noma'lum"}\n` +
+      `📞 ${customer?.phone || "—"}\n\n` +
+      `📍 ${mapLink}\n` +
+      `🏁 Qayerga: ${order.destination_text || "—"}\n\n` +
+      `Qabul qilish uchun haydovchi panelini oching.`;
+
+    await Promise.all(
+      onlineDrivers.map((d) =>
+        bot.sendMessage(d.telegram_id, text, {
+          reply_markup: {
+            inline_keyboard: [[{ text: "🚗 Haydovchi panelini ochish", web_app: { url: `${DRIVER_APP_URL}?tid=${d.telegram_id}` } }]],
+          },
+        }).catch((e) => console.log("Haydovchiga yuborilmadi:", d.telegram_id, e.message))
+      )
+    );
+
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("Taksi webhook xatosi:", err);
+    res.status(500).send("Xatolik");
+  }
+});
+
+// ---- Haydovchi buyurtmani qabul qilgach -> mijozga shaxsiy xabar ----
+app.post("/webhook/taxi-accepted", async (req, res) => {
+  if (!checkSecret(req, res)) return;
+
+  try {
+    const { order_id } = req.body;
+
+    const { data: order } = await supabase
+      .from("taxi_orders")
+      .select("*, customers(telegram_id), drivers(full_name, phone, car_model, car_plate)")
+      .eq("id", order_id)
+      .maybeSingle();
+
+    if (!order) return res.status(404).send("Topilmadi");
+
+    const customerTelegramId = order.customers?.telegram_id;
+    const driver = order.drivers;
+
+    if (customerTelegramId && driver) {
+      await bot.sendMessage(
+        customerTelegramId,
+        `🚖 Haydovchi topildi!\n\n👤 ${driver.full_name}\n📞 ${driver.phone || "—"}\n🚗 ${driver.car_model || "—"} (${driver.car_plate || "—"})`
+      );
+    }
+
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("taxi-accepted xatosi:", err);
+    res.status(500).send("Xatolik");
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`HTTP server ${PORT} portda ishlayapti`));
-
-console.log("Bot ishga tushdi...");
