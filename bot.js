@@ -366,3 +366,16 @@ app.post("/webhook/taxi-accepted", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`HTTP server ${PORT} portda ishlayapti`));
+// ==== Faza 4/6/7/8 — yangi modullarni ulash ====
+const { registerOrderFlowHandlers, notifyRestaurantGroup } = require('./faza4_buyurtma_holati_va_guruh');
+const { registerCourierAssignmentHandlers, registerRatingHandler, askForRating } = require('./faza6_kuryer_biriktirish_va_baho');
+const initSettlementCron = require('./faza7_hisobkitob_cron');
+const { registerGroupOfferHandlers } = require('./faza8_guruh_marketing');
+const initGroupMarketing = require('./faza8_guruh_marketing');
+
+registerOrderFlowHandlers(bot);
+registerCourierAssignmentHandlers(bot);
+registerRatingHandler(bot);
+registerGroupOfferHandlers(bot);
+initSettlementCron(bot);
+initGroupMarketing(bot);
