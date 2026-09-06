@@ -11,6 +11,8 @@ require("dotenv").config();
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
+const { notifyRestaurantGroup, registerOrderFlowHandlers } = require("./faza4_buyurtma_holati_va_guruh");
+const { registerCourierAssignmentHandlers, registerRatingHandler } = require("./faza6_kuryer_biriktirish_va_baho");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBAPP_URL = process.env.WEBAPP_URL;
@@ -27,6 +29,12 @@ if (!BOT_TOKEN || !WEBAPP_URL || !SUPABASE_URL || !SUPABASE_KEY) {
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Buyurtma holati oqimi (✅ Qabul qilish / ❌ Bekor qilish / 📦 Tayyor / 🚴 Kuryerga berish)
+// va kuryer biriktirish + baholash tugmalarini faollashtiramiz
+registerOrderFlowHandlers(bot);
+registerCourierAssignmentHandlers(bot);
+registerRatingHandler(bot);
 
 // Har bir chat uchun vaqtinchalik holat: { role: 'customer'|'driver', step, ...yig'ilgan ma'lumot }
 const pendingState = new Map();
@@ -230,49 +238,13 @@ function checkSecret(req, res) {
   return true;
 }
 
-// ---- Yangi ovqat/mahsulot buyurtmasi -> do'kon guruhiga ----
+// ---- Yangi ovqat/mahsulot buyurtmasi -> do'kon guruhiga (✅/❌ tugmalari bilan) ----
 app.post("/webhook/new-order", async (req, res) => {
   if (!checkSecret(req, res)) return;
 
   try {
     const order = req.body.record;
-
-    const { data: business } = await supabase
-      .from("businesses")
-      .select("name, group_chat_id")
-      .eq("id", order.business_id)
-      .maybeSingle();
-
-    const targetChatId = business?.group_chat_id || GROUP_CHAT_ID;
-    if (!targetChatId) {
-      return res.status(200).send("OK (guruh sozlanmagan)");
-    }
-
-    const { data: customer } = await supabase
-      .from("customers")
-      .select("full_name, phone")
-      .eq("id", order.customer_id)
-      .maybeSingle();
-
-    const { data: items } = await supabase
-      .from("order_items")
-      .select("product_name, quantity")
-      .eq("order_id", order.id);
-
-    const itemsText = (items || []).map((it) => `• ${it.product_name} ×${it.quantity}`).join("\n");
-    const locationText = order.latitude && order.longitude
-      ? `\n📍 https://maps.google.com/?q=${order.latitude},${order.longitude}`
-      : "";
-
-    const text =
-      `🆕 Yangi buyurtma! (${business?.name || "Noma'lum do'kon"})\n\n` +
-      `👤 ${customer?.full_name || "Noma'lum"}\n` +
-      `📞 ${customer?.phone || "—"}\n\n` +
-      `${itemsText}\n\n` +
-      `🏠 ${order.address_text || "—"}${locationText}\n` +
-      `💰 ${Number(order.total_amount).toLocaleString("uz-UZ")} so'm`;
-
-    await bot.sendMessage(targetChatId, text);
+    await notifyRestaurantGroup(bot, order.id);
     res.status(200).send("OK");
   } catch (err) {
     console.error("Webhook xatosi:", err);
@@ -366,16 +338,3 @@ app.post("/webhook/taxi-accepted", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`HTTP server ${PORT} portda ishlayapti`));
-// ==== Faza 4/6/7/8 — yangi modullarni ulash ====
-const { registerOrderFlowHandlers, notifyRestaurantGroup } = require('./faza4_buyurtma_holati_va_guruh');
-const { registerCourierAssignmentHandlers, registerRatingHandler, askForRating } = require('./faza6_kuryer_biriktirish_va_baho');
-const initSettlementCron = require('./faza7_hisobkitob_cron');
-const { registerGroupOfferHandlers } = require('./faza8_guruh_marketing');
-const initGroupMarketing = require('./faza8_guruh_marketing');
-
-registerOrderFlowHandlers(bot);
-registerCourierAssignmentHandlers(bot);
-registerRatingHandler(bot);
-registerGroupOfferHandlers(bot);
-initSettlementCron(bot);
-initGroupMarketing(bot);
