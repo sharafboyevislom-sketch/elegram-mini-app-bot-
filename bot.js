@@ -13,6 +13,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
 const { notifyRestaurantGroup, registerOrderFlowHandlers } = require("./faza4_buyurtma_holati_va_guruh");
 const { registerCourierAssignmentHandlers, registerRatingHandler } = require("./faza6_kuryer_biriktirish_va_baho");
+const initSettlementCron = require("./faza7_hisobkitob_cron");
 const initGroupMarketing = require("./faza8_guruh_marketing");
 const { registerGroupOfferHandlers } = require("./faza8_guruh_marketing");
 
@@ -39,6 +40,7 @@ registerCourierAssignmentHandlers(bot);
 registerRatingHandler(bot);
 registerGroupOfferHandlers(bot);
 initGroupMarketing(bot); // Aksiyalarni har kuni 11:00 va 18:00 da guruhlarga avtomatik yuboradi
+initSettlementCron(bot); // 15 kunlik hisob-kitob: eslatma (13-kun) va bloklash (16-kun)
 
 // Har bir chat uchun vaqtinchalik holat: { role: 'customer'|'driver', step, ...yig'ilgan ma'lumot }
 const pendingState = new Map();
