@@ -13,6 +13,8 @@ const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
 const { notifyRestaurantGroup, registerOrderFlowHandlers } = require("./faza4_buyurtma_holati_va_guruh");
 const { registerCourierAssignmentHandlers, registerRatingHandler } = require("./faza6_kuryer_biriktirish_va_baho");
+const initGroupMarketing = require("./faza8_guruh_marketing");
+const { registerGroupOfferHandlers } = require("./faza8_guruh_marketing");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBAPP_URL = process.env.WEBAPP_URL;
@@ -35,6 +37,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 registerOrderFlowHandlers(bot);
 registerCourierAssignmentHandlers(bot);
 registerRatingHandler(bot);
+registerGroupOfferHandlers(bot);
+initGroupMarketing(bot); // Aksiyalarni har kuni 11:00 va 18:00 da guruhlarga avtomatik yuboradi
 
 // Har bir chat uchun vaqtinchalik holat: { role: 'customer'|'driver', step, ...yig'ilgan ma'lumot }
 const pendingState = new Map();
