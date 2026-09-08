@@ -11,6 +11,9 @@ const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const { updateOrderStatus, STATUS_LABEL } = require('./faza4_buyurtma_holati_va_guruh');
 
+// Kuryerdan "Mijoz topilmadi" sababi kutilayotgan holatlar: chatId -> orderId
+const pendingFailureReason = new Map();
+
 // ─────────────────────────────────────────────────────────────────
 // 1. "Kuryerga berish" bosilganda — faol kuryerlar ro'yxatini ko'rsatish
 //    (faza4.js'dagi 'ord_assign' callback shu funksiyani chaqiradi)
@@ -94,7 +97,71 @@ function registerCourierAssignmentHandlers(bot) {
           one_time_keyboard: true,
         },
       });
+
+      // Manzilga yetib borganda bosiladigan tugmalar
+      await bot.sendMessage(query.message.chat.id, 'Manzilga yetib borgach:', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✅ Yetkazildi', callback_data: `ord_delivered:${orderId}` }],
+            [{ text: '❗ Mijoz topilmadi', callback_data: `ord_delivery_failed:${orderId}` }],
+          ],
+        },
+      });
       await bot.answerCallbackQuery(query.id);
+    }
+
+    else if (data.startsWith('ord_delivered:')) {
+      const [, orderId] = data.split(':');
+      await askForRating(bot, orderId);
+      await bot.editMessageReplyMarkup(
+        { inline_keyboard: [[{ text: '✅ Yetkazildi deb belgilandi', callback_data: 'noop' }]] },
+        { chat_id: query.message.chat.id, message_id: query.message.message_id }
+      );
+      await bot.answerCallbackQuery(query.id, { text: 'Rahmat! Buyurtma yetkazildi deb belgilandi.' });
+    }
+
+    else if (data.startsWith('ord_delivery_failed:')) {
+      const [, orderId] = data.split(':');
+      pendingFailureReason.set(query.message.chat.id, orderId);
+      await bot.sendMessage(
+        query.message.chat.id,
+        '❗ Nima sababdan yetkazib bo\'lmadingiz? Qisqacha yozing (masalan: "mijoz javob bermadi", "manzilda hech kim yo\'q"):'
+      );
+      await bot.answerCallbackQuery(query.id);
+    }
+  });
+
+  // Kuryer "Mijoz topilmadi" sababini matn ko'rinishida yozganda
+  bot.on('message', async (msg) => {
+    if (!msg.text || msg.text.startsWith('/')) return;
+    const orderId = pendingFailureReason.get(msg.chat.id);
+    if (!orderId) return;
+    pendingFailureReason.delete(msg.chat.id);
+
+    await supabase
+      .from('orders')
+      .update({ status: 'delivery_failed', delivery_failed_reason: msg.text })
+      .eq('id', orderId);
+
+    await bot.sendMessage(msg.chat.id, '📝 Qayd etildi. Admin bilan bog\'laning yoki keyingi buyurtmani kuting.');
+
+    // Mijozga va restoran guruhiga xabar beramiz
+    const { data: order } = await supabase
+      .from('orders')
+      .select('customer:customer_id(telegram_id, full_name), business:business_id(name, group_chat_id)')
+      .eq('id', orderId)
+      .single();
+    if (order?.customer?.telegram_id) {
+      await bot.sendMessage(
+        order.customer.telegram_id,
+        `❗ Buyurtmangizni yetkazib berishda muammo yuzaga keldi: "${msg.text}"\n\nIltimos, biz bilan bog'laning yoki tez orada operator siz bilan bog'lanadi.`
+      ).catch(() => {});
+    }
+    if (order?.business?.group_chat_id) {
+      await bot.sendMessage(
+        order.business.group_chat_id,
+        `❗ YETKAZIB BO'LMADI\n\nBuyurtma #${orderId.slice(0, 8)}\n👤 ${order.customer?.full_name || 'Noma\'lum'}\n📝 Sabab: ${msg.text}`
+      ).catch(() => {});
     }
   });
 
